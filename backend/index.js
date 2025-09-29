@@ -72,10 +72,18 @@ app.get('/chat-stream', async (req, res) => {
 
     let fullText = '';
     let tokenCount = 0;
+    let lastChunk = '';
 
     for await (const chunk of stream) {
       const content = chunk.choices[0]?.delta?.content;
       if (content !== undefined && content !== '') {
+        // Check for duplicate chunk (sometimes streaming sends duplicates)
+        if (content === lastChunk) {
+          console.log('Skipping duplicate chunk:', content);
+          continue;
+        }
+        lastChunk = content;
+        
         fullText += content;
         tokenCount += content.split(' ').length; // Rough token estimate
         
@@ -84,6 +92,9 @@ app.get('/chat-stream', async (req, res) => {
           type: 'chunk', 
           content 
         })}\n\n`);
+        
+        // Force flush the response
+        if (res.flush) res.flush();
       }
     }
 
@@ -110,19 +121,40 @@ app.get('/chat-stream', async (req, res) => {
 // Original non-streaming endpoint (kept for compatibility)
 app.post('/chat', async (req, res) => {
   const { message, model } = req.body;
-  console.log(`Received message for ${model}: ${message}`);
+  console.log(`Received non-streaming message for ${model}: ${message}`);
+
+  // Map GPT-5 models to available alternatives if they fail
+  const modelMap = {
+    'gpt-5': 'gpt-4-turbo-preview',
+    'gpt-5-mini': 'gpt-3.5-turbo', 
+    'gpt-5-nano': 'gpt-3.5-turbo'
+  };
+  
+  let actualModel = model;
 
   try {
-    const completion = await openai.chat.completions.create({
-      model: model || 'gpt-3.5-turbo',
-      messages: [{ role: 'user', content: message }],
-    });
+    let completion;
+    try {
+      completion = await openai.chat.completions.create({
+        model: model || 'gpt-3.5-turbo',
+        messages: [{ role: 'user', content: message }],
+      });
+    } catch (modelError) {
+      console.log(`Model ${model} not found, falling back to ${modelMap[model]}`);
+      actualModel = modelMap[model] || 'gpt-3.5-turbo';
+      completion = await openai.chat.completions.create({
+        model: actualModel,
+        messages: [{ role: 'user', content: message }],
+      });
+    }
 
     const responseText = completion.choices[0].message.content;
     const inputTokens = completion.usage?.prompt_tokens || 0;
     const outputTokens = completion.usage?.completion_tokens || 0;
     const cost = calculateCost(model, inputTokens, outputTokens);
 
+    console.log(`Response sent successfully (${responseText.substring(0, 50)}...)`);
+    
     res.json({ 
       text: responseText,
       model: model,

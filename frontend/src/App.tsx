@@ -330,75 +330,47 @@ User: ${textToSend}`;
     
     // --- End Context Construction ---
 
-    // Use EventSource for streaming
-    const params = new URLSearchParams({
-      message: finalPrompt,
-      model: selectedModel
-    });
-    
-    console.log('Attempting SSE connection with params:', params.toString());
-    console.log('URL length:', `http://localhost:3001/chat-stream?${params}`.length);
-    
-    const eventSource = new EventSource(`http://localhost:3001/chat-stream?${params}`);
-    
-    eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        
-        if (data.type === 'chunk') {
-          // Append chunk to AI message
-          setMessages(prevMessages => {
-            const updatedMessages = new Map(prevMessages);
-            const aiMsg = updatedMessages.get(aiMessageId);
-            if (aiMsg) {
-              aiMsg.text = (aiMsg.text || '') + data.content;
-            }
-            return updatedMessages;
-          });
-        } else if (data.type === 'done') {
-          // Update with final metadata
-          setMessages(prevMessages => {
-            const updatedMessages = new Map(prevMessages);
-            const aiMsg = updatedMessages.get(aiMessageId);
-            if (aiMsg) {
-              aiMsg.model = data.model;
-              aiMsg.cost = data.cost;
-            }
-            return updatedMessages;
-          });
-          setTotalCost(prevCost => prevCost + (data.cost || 0));
-          eventSource.close();
-        } else if (data.type === 'error') {
-          console.error('Stream error:', data.message);
-          setMessages(prevMessages => {
-            const updatedMessages = new Map(prevMessages);
-            const aiMsg = updatedMessages.get(aiMessageId);
-            if (aiMsg) {
-              aiMsg.text = `Error: ${data.message}`;
-              aiMsg.sender = 'error';
-            }
-            return updatedMessages;
-          });
-          eventSource.close();
-        }
-      } catch (error) {
-        console.error('Parse error:', error);
-      }
-    };
-    
-    eventSource.onerror = (error) => {
-      console.error('EventSource error:', error);
+    // Use non-streaming POST endpoint to bypass streaming issues
+    try {
+      const response = await fetch('http://localhost:3001/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          message: finalPrompt, 
+          model: selectedModel 
+        }),
+      });
+
+      if (!response.ok) throw new Error('Network response was not ok');
+
+      const data = await response.json();
+      
+      // Update AI message with the complete response
       setMessages(prevMessages => {
         const updatedMessages = new Map(prevMessages);
         const aiMsg = updatedMessages.get(aiMessageId);
         if (aiMsg) {
-          aiMsg.text = 'Failed to connect to the server.';
+          aiMsg.text = data.text;
+          aiMsg.model = data.model;
+          aiMsg.cost = data.cost;
+        }
+        return updatedMessages;
+      });
+      
+      setTotalCost(prevCost => prevCost + (data.cost || 0));
+      
+    } catch (error) {
+      console.error('Fetch error:', error);
+      setMessages(prevMessages => {
+        const updatedMessages = new Map(prevMessages);
+        const aiMsg = updatedMessages.get(aiMessageId);
+        if (aiMsg) {
+          aiMsg.text = 'Failed to get response from server.';
           aiMsg.sender = 'error';
         }
         return updatedMessages;
       });
-      eventSource.close();
-    };
+    }
   };
 
   return (

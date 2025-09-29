@@ -52,8 +52,8 @@ const MessageTextWithThreads: React.FC<MessageTextWithThreadsProps> = ({
     });
   };
 
+  // Always format the text, whether there are threads or not
   if (!message.threadAnchors || message.threadAnchors.length === 0) {
-    // No threads, return formatted text
     return <div className="message-text">{formatText(message.text)}</div>;
   }
 
