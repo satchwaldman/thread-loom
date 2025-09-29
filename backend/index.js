@@ -15,6 +15,13 @@ const openai = new OpenAI({
   apiKey: apiKey,
 });
 
+// Hypothetical pricing per million tokens (input/output)
+const PRICING = {
+  'gpt-5': { input: 10.00, output: 30.00 },
+  'gpt-5-mini': { input: 1.00, output: 2.00 },
+  'gpt-5-nano': { input: 0.25, output: 0.50 },
+};
+
 app.use(cors());
 app.use(express.json());
 
@@ -32,9 +39,19 @@ app.post('/chat', async (req, res) => {
       model: model,
     });
 
+    const usage = completion.usage;
+    let cost = 0;
+    if (usage && PRICING[model]) {
+      const { prompt_tokens, completion_tokens } = usage;
+      const { input: inputPrice, output: outputPrice } = PRICING[model];
+      cost = ((prompt_tokens / 1000000) * inputPrice) + ((completion_tokens / 1000000) * outputPrice);
+    }
+
     const aiResponse = {
       sender: 'AI',
       text: completion.choices[0].message.content,
+      model: model,
+      cost: cost,
     };
 
     res.json(aiResponse);

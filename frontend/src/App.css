@@ -63,6 +63,23 @@
 
 .message {
   margin-bottom: 1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.message-main-content {
+  display: flex;
+  align-items: flex-start;
+  text-align: left;
+}
+
+.message-body {
+  margin-left: 10px;
+}
+
+.message-actions {
+  flex-shrink: 0;
 }
 
 .message .sender {

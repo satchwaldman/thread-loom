@@ -12,4 +12,6 @@ export interface Message {
   children: string[];
   isCollapsed: boolean;
   threadAnchors: ThreadAnchor[];
+  model?: string;
+  cost?: number;
 }

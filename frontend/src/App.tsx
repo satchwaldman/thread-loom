@@ -6,7 +6,12 @@ import Sidebar from './components/Sidebar';
 
 // --- Utility Functions ---
 
-const createNewMessage = (text: string, sender: 'user' | 'ai' | 'error', parentId: string | null): Message => {
+const createNewMessage = (
+  text: string,
+  sender: 'user' | 'ai' | 'error',
+  parentId: string | null,
+  options: { model?: string; cost?: number } = {}
+): Message => {
   return {
     id: `msg_${Date.now()}_${Math.random()}`,
     text,
@@ -15,6 +20,8 @@ const createNewMessage = (text: string, sender: 'user' | 'ai' | 'error', parentI
     children: [],
     isCollapsed: false,
     threadAnchors: [],
+    model: options.model,
+    cost: options.cost,
   };
 };
 
@@ -37,6 +44,7 @@ function App() {
   const [selectedModel, setSelectedModel] = useState('gpt-5-mini');
   const [activeParentId, setActiveParentId] = useState<string | null>(null);
   const [selectedContextIds, setSelectedContextIds] = useState<string[]>([]);
+  const [totalCost, setTotalCost] = useState(0);
 
   const handleRemoveFromContext = (messageId: string) => {
     setSelectedContextIds(prev => prev.filter(id => id !== messageId));
@@ -47,6 +55,15 @@ function App() {
       if (prev.includes(messageId)) return prev; // Avoid duplicates
       return [...prev, messageId];
     });
+  };
+
+  const handleToggleCollapse = (messageId: string) => {
+    const newMessagesMap = new Map(messages);
+    const message = newMessagesMap.get(messageId);
+    if (message) {
+      message.isCollapsed = !message.isCollapsed;
+      setMessages(newMessagesMap);
+    }
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -92,12 +109,16 @@ function App() {
 
       const aiResponseData = await response.json();
       // The AI's response should be a child of the user's message
-      const aiMessage = createNewMessage(aiResponseData.text, 'ai', userMessage.id);
+      const aiMessage = createNewMessage(aiResponseData.text, 'ai', userMessage.id, {
+        model: aiResponseData.model,
+        cost: aiResponseData.cost,
+      });
       
       const finalMessagesMap = new Map(newMessagesMap);
       finalMessagesMap.set(aiMessage.id, aiMessage);
       userMessage.children.push(aiMessage.id); // Link AI response to user message
       setMessages(finalMessagesMap);
+      setTotalCost(prevCost => prevCost + (aiResponseData.cost || 0));
 
     } catch (error) {
       console.error('Fetch error:', error);
@@ -113,6 +134,9 @@ function App() {
   return (
     <div className="main-layout">
       <div className="chat-container">
+        <div style={{ padding: '0.5rem 1rem', borderBottom: '1px solid #444', textAlign: 'left' }}>
+          Total Cost: ${totalCost.toFixed(6)}
+        </div>
         <div className="message-list">
         {mainThreadIds.map(id => (
           <MessageView
@@ -121,36 +145,37 @@ function App() {
             allMessages={messages}
             onSetReply={setActiveParentId}
             onAddToContext={handleAddToContext}
+            onToggleCollapse={handleToggleCollapse}
           />
         ))}
-      </div>
-      {activeParentId && (
-        <div style={{ textAlign: 'left', padding: '0 1rem', fontSize: '12px', color: '#aaa' }}>
-          Replying to message: {messages.get(activeParentId)?.text.substring(0, 50)}...
-          <button onClick={() => setActiveParentId(null)} style={{ marginLeft: '10px' }}>Cancel</button>
         </div>
-      )}
-      <form className="input-form" onSubmit={handleSendMessage}>
-        <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>
-          <option value="gpt-5">GPT-5</option>
-          <option value="gpt-5-mini">GPT-5 Mini</option>
-          <option value="gpt-5-nano">GPT-5 Nano</option>
-        </select>
-        <input
-          type="text"
-          value={inputText}
-          onChange={(e) => setInputText(e.target.value)}
-          placeholder="Type your message..."
-        />
-        <button type="submit">Send</button>
-      </form>
+        {activeParentId && (
+          <div style={{ textAlign: 'left', padding: '0 1rem', fontSize: '12px', color: '#aaa' }}>
+            Replying to message: {messages.get(activeParentId)?.text.substring(0, 50)}...
+            <button onClick={() => setActiveParentId(null)} style={{ marginLeft: '10px' }}>Cancel</button>
+          </div>
+        )}
+        <form className="input-form" onSubmit={handleSendMessage}>
+          <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>
+            <option value="gpt-5">GPT-5</option>
+            <option value="gpt-5-mini">GPT-5 Mini</option>
+            <option value="gpt-5-nano">GPT-5 Nano</option>
+          </select>
+          <input
+            type="text"
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            placeholder="Type your message..."
+          />
+          <button type="submit">Send</button>
+        </form>
+      </div>
+      <Sidebar
+        selectedContextIds={selectedContextIds}
+        allMessages={messages}
+        onRemoveFromContext={handleRemoveFromContext}
+      />
     </div>
-    <Sidebar
-      selectedContextIds={selectedContextIds}
-      allMessages={messages}
-      onRemoveFromContext={handleRemoveFromContext}
-    />
-  </div>
   );
 }
 
