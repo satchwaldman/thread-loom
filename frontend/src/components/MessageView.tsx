@@ -1,5 +1,6 @@
 import React from 'react';
 import type { Message } from '../types';
+import MessageTextWithThreads from './MessageTextWithThreads';
 
 interface MessageViewProps {
   messageId: string;
@@ -24,9 +25,9 @@ const MessageView: React.FC<MessageViewProps> = ({
 
   const hasChildren = message.children && message.children.length > 0;
   
-  // Build collapse button if needed
+  // Build collapse button if needed (for regular child messages, not inline threads)
   let collapseButton = null;
-  if (hasChildren) {
+  if (hasChildren && !message.parentId?.includes('anchor_')) {
     const buttonText = message.isCollapsed ? '[+]' : '[-]';
     collapseButton = (
       <button 
@@ -56,9 +57,9 @@ const MessageView: React.FC<MessageViewProps> = ({
     );
   }
 
-  // Build children display if needed
+  // Build children display if needed (for regular children, not inline threads)
   let childrenDisplay = null;
-  if (!message.isCollapsed && hasChildren) {
+  if (!message.isCollapsed && hasChildren && !message.id.includes('anchor_')) {
     childrenDisplay = (
       <div 
         className="children-container" 
@@ -84,28 +85,20 @@ const MessageView: React.FC<MessageViewProps> = ({
 
   return (
     <div className="message-container">
-      <div className="message">
+      <div className="message" data-message-id={message.id}>
         <div className="message-main-content">
           {collapseButton}
           <div className="message-body">
             <div className="sender">{message.sender}</div>
-            <div>{message.text}</div>
+            <MessageTextWithThreads
+              message={message}
+              allMessages={allMessages}
+              onSetReply={onSetReply}
+              onAddToContext={onAddToContext}
+              onToggleCollapse={onToggleCollapse}
+            />
             {costDisplay}
           </div>
-        </div>
-        <div className="message-actions">
-          <button 
-            onClick={() => onSetReply(message.id)} 
-            style={{ fontSize: '10px', padding: '2px 5px' }}
-          >
-            Reply
-          </button>
-          <button 
-            onClick={() => onAddToContext(message.id)} 
-            style={{ fontSize: '10px', padding: '2px 5px', marginLeft: '5px' }}
-          >
-            Add to Context
-          </button>
         </div>
       </div>
       {childrenDisplay}

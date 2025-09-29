@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import type { Message } from './types';
+import type { Message, ThreadAnchor } from './types';
 import MessageView from './components/MessageView';
 import Sidebar from './components/Sidebar';
+import SelectionPopup from './components/SelectionPopup';
 
 // --- Utility Functions ---
 
@@ -46,6 +47,116 @@ function App() {
   const [selectedContextIds, setSelectedContextIds] = useState<string[]>([]);
   const [totalCost, setTotalCost] = useState(0);
 
+  // Selection popup state
+  const [selectionPopup, setSelectionPopup] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    selectedText: string;
+    messageIds: string[];
+    startOffset?: number;
+    endOffset?: number;
+  }>({
+    visible: false,
+    x: 0,
+    y: 0,
+    selectedText: '',
+    messageIds: [],
+  });
+
+  // Handle text selection
+  useEffect(() => {
+    const handleMouseUp = () => {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) {
+        return;
+      }
+
+      const selectedText = selection.toString().trim();
+      if (!selectedText) {
+        setSelectionPopup(prev => ({ ...prev, visible: false }));
+        return;
+      }
+
+      const range = selection.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+
+      // Find which message(s) the selection spans
+      const messageIds = new Set<string>();
+      
+      // Helper function to find parent message
+      const findMessageId = (node: Node): string | null => {
+        let current = node as HTMLElement;
+        while (current && current !== document.body) {
+          if (current.nodeType === Node.ELEMENT_NODE) {
+            const element = current as HTMLElement;
+            if (element.classList?.contains('message') && element.dataset.messageId) {
+              return element.dataset.messageId;
+            }
+          }
+          current = current.parentNode as HTMLElement;
+        }
+        return null;
+      };
+
+      // Find the message text container
+      const findMessageTextContainer = (node: Node): HTMLElement | null => {
+        let current = node as HTMLElement;
+        while (current && current !== document.body) {
+          if (current.nodeType === Node.ELEMENT_NODE) {
+            const element = current as HTMLElement;
+            if (element.classList?.contains('message-text')) {
+              return element;
+            }
+          }
+          current = current.parentNode as HTMLElement;
+        }
+        return null;
+      };
+
+      const startMessageId = findMessageId(range.startContainer);
+      const endMessageId = findMessageId(range.endContainer);
+
+      if (startMessageId) messageIds.add(startMessageId);
+      if (endMessageId && endMessageId !== startMessageId) messageIds.add(endMessageId);
+
+      const messageIdArray = Array.from(messageIds);
+
+      // Calculate text position within the message (for single message selections)
+      let startOffset = undefined;
+      let endOffset = undefined;
+      
+      if (messageIdArray.length === 1) {
+        const messageTextContainer = findMessageTextContainer(range.startContainer);
+        if (messageTextContainer) {
+          const fullText = messageTextContainer.textContent || '';
+          const preSelectionRange = document.createRange();
+          preSelectionRange.selectNodeContents(messageTextContainer);
+          preSelectionRange.setEnd(range.startContainer, range.startOffset);
+          const preSelectionText = preSelectionRange.toString();
+          
+          startOffset = preSelectionText.length;
+          endOffset = startOffset + selectedText.length;
+        }
+      }
+
+      if (messageIdArray.length > 0) {
+        setSelectionPopup({
+          visible: true,
+          x: rect.left + rect.width / 2,
+          y: rect.top - 40, // Position above selection
+          selectedText,
+          messageIds: messageIdArray,
+          startOffset,
+          endOffset,
+        });
+      }
+    };
+
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => document.removeEventListener('mouseup', handleMouseUp);
+  }, []);
+
   const handleRemoveFromContext = (messageId: string) => {
     setSelectedContextIds(prev => prev.filter(id => id !== messageId));
   };
@@ -64,6 +175,53 @@ function App() {
       message.isCollapsed = !message.isCollapsed;
       setMessages(newMessagesMap);
     }
+  };
+
+  const handleAddThread = () => {
+    if (selectionPopup.messageIds.length !== 1) return;
+    if (selectionPopup.startOffset === undefined || selectionPopup.endOffset === undefined) return;
+    
+    const messageId = selectionPopup.messageIds[0];
+    const message = messages.get(messageId);
+    if (!message) return;
+
+    // Create a placeholder message for the inline thread
+    const anchorId = `anchor_${Date.now()}_${Math.random()}`;
+    const anchorMessage = createNewMessage('', 'user', messageId); // Empty placeholder
+    anchorMessage.id = anchorId;
+
+    // Create thread anchor
+    const newAnchor: ThreadAnchor = {
+      startIndex: selectionPopup.startOffset,
+      endIndex: selectionPopup.endOffset,
+      threadId: anchorId,
+      text: selectionPopup.selectedText,
+    };
+
+    // Update the message with the new thread anchor
+    const newMessagesMap = new Map(messages);
+    const updatedMessage = newMessagesMap.get(messageId);
+    if (updatedMessage) {
+      updatedMessage.threadAnchors = [...(updatedMessage.threadAnchors || []), newAnchor];
+      newMessagesMap.set(anchorId, anchorMessage);
+      setMessages(newMessagesMap);
+      
+      // Set this as the active parent for the next message
+      setActiveParentId(anchorId);
+    }
+    
+    window.getSelection()?.removeAllRanges();
+    setSelectionPopup(prev => ({ ...prev, visible: false }));
+  };
+
+  const handleAddSelectionToContext = () => {
+    // Add all messages that contain the selection to context
+    selectionPopup.messageIds.forEach(messageId => {
+      handleAddToContext(messageId);
+    });
+    
+    window.getSelection()?.removeAllRanges();
+    setSelectionPopup(prev => ({ ...prev, visible: false }));
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -151,7 +309,11 @@ function App() {
         </div>
         {activeParentId && (
           <div style={{ textAlign: 'left', padding: '0 1rem', fontSize: '12px', color: '#aaa' }}>
-            Replying to message: {messages.get(activeParentId)?.text.substring(0, 50)}...
+            {activeParentId.includes('anchor_') 
+              ? `Creating inline thread at: "${messages.get(activeParentId)?.parentId ? 
+                  messages.get(messages.get(activeParentId)?.parentId || '')?.threadAnchors?.find(a => a.threadId === activeParentId)?.text : ''}"...`
+              : `Replying to message: ${messages.get(activeParentId)?.text.substring(0, 50)}...`
+            }
             <button onClick={() => setActiveParentId(null)} style={{ marginLeft: '10px' }}>Cancel</button>
           </div>
         )}
@@ -175,6 +337,16 @@ function App() {
         allMessages={messages}
         onRemoveFromContext={handleRemoveFromContext}
       />
+      {selectionPopup.visible && (
+        <SelectionPopup
+          x={selectionPopup.x}
+          y={selectionPopup.y}
+          showAddThread={selectionPopup.messageIds.length === 1}
+          onAddThread={handleAddThread}
+          onAddToContext={handleAddSelectionToContext}
+          onClose={() => setSelectionPopup(prev => ({ ...prev, visible: false }))}
+        />
+      )}
     </div>
   );
 }

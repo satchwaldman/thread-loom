@@ -2,6 +2,7 @@ export interface ThreadAnchor {
   startIndex: number;
   endIndex: number;
   threadId: string;
+  text: string; // The highlighted text
 }
 
 export interface Message {
