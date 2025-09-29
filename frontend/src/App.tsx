@@ -29,18 +29,9 @@ const createNewMessage = (
 // --- Main App Component ---
 
 function App() {
-  const [messages, setMessages] = useState<Map<string, Message>>(() => {
-    const initialMessage = createNewMessage('Welcome to Thread Loom!', 'ai', null);
-    const map = new Map<string, Message>();
-    map.set(initialMessage.id, initialMessage);
-    return map;
-  });
-
-  const [mainThreadIds, setMainThreadIds] = useState<string[]>(() => {
-    // In a real app, we'd derive this from the initial messages map
-    return Array.from(messages.keys());
-  });
-
+  const [messages, setMessages] = useState<Map<string, Message>>(new Map());
+  const [mainThreadIds, setMainThreadIds] = useState<string[]>([]);
+  
   const [inputText, setInputText] = useState('');
   const [selectedModel, setSelectedModel] = useState('gpt-5-mini');
   const [activeParentId, setActiveParentId] = useState<string | null>(null);
@@ -224,17 +215,22 @@ function App() {
     setSelectionPopup(prev => ({ ...prev, visible: false }));
   };
 
-  const handleSendMessage = async (e: React.FormEvent) => {
+  const handleSendMessage = async (e: React.FormEvent, parentId?: string | null, messageText?: string) => {
     e.preventDefault();
-    if (inputText.trim() === '') return;
+    const actualParentId = parentId !== undefined ? parentId : activeParentId;
+    
+    // Get text from form input if not provided directly
+    const textToSend = messageText || inputText;
+    
+    if (textToSend.trim() === '') return;
 
-    const userMessage = createNewMessage(inputText, 'user', activeParentId);
+    const userMessage = createNewMessage(textToSend, 'user', actualParentId);
     const newMessagesMap = new Map(messages);
     newMessagesMap.set(userMessage.id, userMessage);
 
     // If it's a reply, update the parent's children array
-    if (activeParentId) {
-      const parent = newMessagesMap.get(activeParentId);
+    if (actualParentId) {
+      const parent = newMessagesMap.get(actualParentId);
       if (parent) {
         parent.children.push(userMessage.id);
       }
@@ -246,47 +242,163 @@ function App() {
     setInputText('');
     setActiveParentId(null); // Reset after sending
 
-    try {
-      // --- Context Construction ---
-      let context = '';
-      if (selectedContextIds.length > 0) {
-        context = selectedContextIds.map(id => messages.get(id)?.text || '').join('\n\n');
-      } else {
-        // TODO: Implement default tree traversal logic here
+    // Create AI message placeholder with empty text
+    const aiMessageId = `msg_${Date.now()}_${Math.random()}`;
+    const aiMessage = createNewMessage('', 'ai', actualParentId);
+    aiMessage.id = aiMessageId;
+    
+    const streamingMap = new Map(newMessagesMap);
+    streamingMap.set(aiMessage.id, aiMessage);
+    
+    // Add AI message to the same parent as user message
+    if (actualParentId) {
+      const parent = streamingMap.get(actualParentId);
+      if (parent) {
+        parent.children.push(aiMessage.id);
       }
-      const messageWithContext = context ? `${context}\n\n---\n\nUser: ${inputText}` : inputText;
-      // --- End Context Construction ---
-
-      const response = await fetch('http://localhost:3001/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: messageWithContext, model: selectedModel }),
-      });
-
-      if (!response.ok) throw new Error('Network response was not ok');
-
-      const aiResponseData = await response.json();
-      // The AI's response should be a child of the user's message
-      const aiMessage = createNewMessage(aiResponseData.text, 'ai', userMessage.id, {
-        model: aiResponseData.model,
-        cost: aiResponseData.cost,
-      });
-      
-      const finalMessagesMap = new Map(newMessagesMap);
-      finalMessagesMap.set(aiMessage.id, aiMessage);
-      userMessage.children.push(aiMessage.id); // Link AI response to user message
-      setMessages(finalMessagesMap);
-      setTotalCost(prevCost => prevCost + (aiResponseData.cost || 0));
-
-    } catch (error) {
-      console.error('Fetch error:', error);
-      const errorMessage = createNewMessage('Failed to get a response from the server.', 'error', userMessage.id);
-      
-      const errorMap = new Map(newMessagesMap);
-      errorMap.set(errorMessage.id, errorMessage);
-      userMessage.children.push(errorMessage.id);
-      setMessages(errorMap);
+    } else {
+      setMainThreadIds(prev => [...prev, aiMessage.id]);
     }
+    
+    setMessages(streamingMap);
+
+    // --- Context Construction ---
+    let context = '';
+    
+    // Build context by traversing up the parent chain
+    const contextMessages: string[] = [];
+    let currentId = actualParentId;
+    let depth = 0;
+    const maxDepth = 20; // Limit context depth
+    let threadAnchorText = '';
+    
+    // Check if this is an inline thread and get the anchor text
+    if (actualParentId?.includes('anchor_')) {
+      const parentMessage = messages.get(actualParentId);
+      if (parentMessage && parentMessage.parentId) {
+        const grandparentMessage = messages.get(parentMessage.parentId);
+        const anchor = grandparentMessage?.threadAnchors?.find(a => a.threadId === actualParentId);
+        if (anchor) {
+          threadAnchorText = anchor.text;
+        }
+      }
+    }
+    
+    while (currentId && depth < maxDepth) {
+      const msg = messages.get(currentId);
+      if (msg && msg.text) {
+        // Add message to context (prepend since we're going backwards)
+        // Don't include empty anchor messages
+        if (!msg.id.includes('anchor_') || msg.text !== '') {
+          contextMessages.unshift(`${msg.sender}: ${msg.text}`);
+        }
+      }
+      currentId = msg?.parentId || null;
+      depth++;
+    }
+    
+    // Add selected context if any
+    if (selectedContextIds.length > 0) {
+      const selectedContext = selectedContextIds.map(id => {
+        const msg = messages.get(id);
+        return msg ? `${msg.sender}: ${msg.text}` : '';
+      }).filter(text => text).join('\n\n');
+      if (selectedContext) {
+        context = selectedContext + '\n\n---\n\n' + contextMessages.join('\n\n');
+      } else {
+        context = contextMessages.join('\n\n');
+      }
+    } else {
+      context = contextMessages.join('\n\n');
+    }
+    
+    // Special prompt engineering for inline threads
+    let finalPrompt = '';
+    if (threadAnchorText) {
+      // This is an inline thread - add special context
+      finalPrompt = `You are responding to a side thread about "${threadAnchorText}". 
+Give a response to the following prompt: "${textToSend}"
+Focus specifically on how it relates to "${threadAnchorText}".
+
+Context of the conversation:
+${context}
+
+User: ${textToSend}`;
+    } else {
+      finalPrompt = context ? `${context}\n\n---\n\nUser: ${textToSend}` : `User: ${textToSend}`;
+    }
+    
+    // --- End Context Construction ---
+
+    // Use EventSource for streaming
+    const params = new URLSearchParams({
+      message: finalPrompt,
+      model: selectedModel
+    });
+    
+    console.log('Attempting SSE connection with params:', params.toString());
+    console.log('URL length:', `http://localhost:3001/chat-stream?${params}`.length);
+    
+    const eventSource = new EventSource(`http://localhost:3001/chat-stream?${params}`);
+    
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        
+        if (data.type === 'chunk') {
+          // Append chunk to AI message
+          setMessages(prevMessages => {
+            const updatedMessages = new Map(prevMessages);
+            const aiMsg = updatedMessages.get(aiMessageId);
+            if (aiMsg) {
+              aiMsg.text = (aiMsg.text || '') + data.content;
+            }
+            return updatedMessages;
+          });
+        } else if (data.type === 'done') {
+          // Update with final metadata
+          setMessages(prevMessages => {
+            const updatedMessages = new Map(prevMessages);
+            const aiMsg = updatedMessages.get(aiMessageId);
+            if (aiMsg) {
+              aiMsg.model = data.model;
+              aiMsg.cost = data.cost;
+            }
+            return updatedMessages;
+          });
+          setTotalCost(prevCost => prevCost + (data.cost || 0));
+          eventSource.close();
+        } else if (data.type === 'error') {
+          console.error('Stream error:', data.message);
+          setMessages(prevMessages => {
+            const updatedMessages = new Map(prevMessages);
+            const aiMsg = updatedMessages.get(aiMessageId);
+            if (aiMsg) {
+              aiMsg.text = `Error: ${data.message}`;
+              aiMsg.sender = 'error';
+            }
+            return updatedMessages;
+          });
+          eventSource.close();
+        }
+      } catch (error) {
+        console.error('Parse error:', error);
+      }
+    };
+    
+    eventSource.onerror = (error) => {
+      console.error('EventSource error:', error);
+      setMessages(prevMessages => {
+        const updatedMessages = new Map(prevMessages);
+        const aiMsg = updatedMessages.get(aiMessageId);
+        if (aiMsg) {
+          aiMsg.text = 'Failed to connect to the server.';
+          aiMsg.sender = 'error';
+        }
+        return updatedMessages;
+      });
+      eventSource.close();
+    };
   };
 
   return (
@@ -304,6 +416,8 @@ function App() {
             onSetReply={setActiveParentId}
             onAddToContext={handleAddToContext}
             onToggleCollapse={handleToggleCollapse}
+            onSendMessage={handleSendMessage}
+            selectedModel={selectedModel}
           />
         ))}
         </div>
@@ -317,7 +431,7 @@ function App() {
             <button onClick={() => setActiveParentId(null)} style={{ marginLeft: '10px' }}>Cancel</button>
           </div>
         )}
-        <form className="input-form" onSubmit={handleSendMessage}>
+        <form className="input-form" onSubmit={(e) => handleSendMessage(e, null)}>
           <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>
             <option value="gpt-5">GPT-5</option>
             <option value="gpt-5-mini">GPT-5 Mini</option>

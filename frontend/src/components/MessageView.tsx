@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import type { Message } from '../types';
 import MessageTextWithThreads from './MessageTextWithThreads';
 
@@ -8,6 +8,9 @@ interface MessageViewProps {
   onSetReply: (parentId: string) => void;
   onAddToContext: (messageId: string) => void;
   onToggleCollapse: (messageId: string) => void;
+  onSendMessage?: (e: React.FormEvent, parentId?: string | null, messageText?: string) => Promise<void>;
+  selectedModel?: string;
+  isInlineThread?: boolean;
 }
 
 const MessageView: React.FC<MessageViewProps> = ({ 
@@ -15,8 +18,12 @@ const MessageView: React.FC<MessageViewProps> = ({
   allMessages, 
   onSetReply, 
   onAddToContext, 
-  onToggleCollapse 
+  onToggleCollapse,
+  onSendMessage,
+  selectedModel,
+  isInlineThread = false
 }) => {
+  const [threadInput, setThreadInput] = useState('');
   const message = allMessages.get(messageId);
 
   if (!message) {
@@ -64,9 +71,9 @@ const MessageView: React.FC<MessageViewProps> = ({
       <div 
         className="children-container" 
         style={{ 
-          marginLeft: '20px', 
-          borderLeft: '1px solid #444', 
-          paddingLeft: '10px' 
+          marginLeft: isInlineThread ? '0' : '20px', 
+          borderLeft: isInlineThread ? 'none' : '1px solid #444', 
+          paddingLeft: isInlineThread ? '0' : '10px' 
         }}
       >
         {message.children.map((childId) => (
@@ -77,10 +84,79 @@ const MessageView: React.FC<MessageViewProps> = ({
             onSetReply={onSetReply}
             onAddToContext={onAddToContext}
             onToggleCollapse={onToggleCollapse}
+            onSendMessage={onSendMessage}
+            selectedModel={selectedModel}
+            isInlineThread={isInlineThread}
           />
         ))}
       </div>
     );
+  }
+
+  // Add thread input form only for non-inline threads
+  let threadInputForm = null;
+  if (onSendMessage && !message.isCollapsed && !isInlineThread) {
+    const isThreadAnchor = message.id.includes('anchor_');
+    // Don't show input for anchor messages as they're handled in MessageTextWithThreads
+    const showInput = !isThreadAnchor && hasChildren && !message.parentId?.includes('anchor_');
+    
+    if (showInput) {
+      const handleThreadSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (threadInput.trim() === '') return;
+        
+        // For thread anchors, send message to the anchor
+        // For regular threads, send message to continue at same level
+        const parentId = isThreadAnchor ? message.id : message.parentId;
+        
+        // Pass the thread input text as the third parameter
+        await onSendMessage(e, parentId, threadInput);
+        setThreadInput('');
+      };
+
+      threadInputForm = (
+        <form 
+          onSubmit={handleThreadSubmit}
+          style={{ 
+            marginTop: '10px',
+            marginBottom: '10px',
+            display: 'flex',
+            gap: '8px',
+            alignItems: 'center'
+          }}
+        >
+          <input
+            type="text"
+            value={threadInput}
+            onChange={(e) => setThreadInput(e.target.value)}
+            placeholder={isThreadAnchor ? "Start thread here..." : "Continue thread..."}
+            style={{
+              flex: 1,
+              padding: '6px 10px',
+              fontSize: '14px',
+              background: '#2a2a2a',
+              border: '1px solid #444',
+              borderRadius: '4px',
+              color: '#fff'
+            }}
+          />
+          <button 
+            type="submit"
+            style={{
+              padding: '6px 12px',
+              fontSize: '14px',
+              background: '#007bff',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer'
+            }}
+          >
+            Send
+          </button>
+        </form>
+      );
+    }
   }
 
   return (
@@ -96,11 +172,14 @@ const MessageView: React.FC<MessageViewProps> = ({
               onSetReply={onSetReply}
               onAddToContext={onAddToContext}
               onToggleCollapse={onToggleCollapse}
+              onSendMessage={onSendMessage}
+              selectedModel={selectedModel}
             />
             {costDisplay}
           </div>
         </div>
       </div>
+      {threadInputForm}
       {childrenDisplay}
     </div>
   );
